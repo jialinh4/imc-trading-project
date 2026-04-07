@@ -70,9 +70,13 @@ def main() -> None:
         file_name=str(out_dir / "exchange_smoke_backtest.log"),
     )
     backtester.run()
+    latest_snapshot = backtester.accounting.get_latest_symbol_snapshot(Product.AMETHYSTS)
+    latest_portfolio = backtester.accounting.get_portfolio_history()[-1]
     print("Exchange smoke backtest finished successfully.")
     print(f"Final pnl: {backtester.pnl}")
     print(f"Final positions: {backtester.current_position}")
+    print(f"Latest symbol fair pnl: {latest_snapshot.total_pnl_fair if latest_snapshot else 0}")
+    print(f"Latest portfolio fair pnl: {latest_portfolio.total_pnl_fair}")
 
 
 if __name__ == "__main__":

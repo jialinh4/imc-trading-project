@@ -46,3 +46,21 @@ def test_accounting_engine_realizes_pnl_when_closing_position() -> None:
     assert snapshot.realized_pnl == 10
     assert snapshot.position == 1
     assert snapshot.cash == -90
+
+
+def test_accounting_engine_builds_portfolio_snapshot() -> None:
+    engine = AccountingEngine()
+    engine.record_fill(Fill("ord_1", "AMETHYSTS", 100, 2, "taker", 1), signed_qty=2)
+    engine.record_fill(Fill("ord_2", "STARFRUIT", 5000, 1, "taker", 1), signed_qty=-1)
+
+    am_depth = OrderDepth(buy_orders={99: 10}, sell_orders={101: -10})
+    sf_depth = OrderDepth(buy_orders={4998: 10}, sell_orders={5002: -10})
+
+    engine.mark(1, "AMETHYSTS", am_depth, fair_value=100, num_fills=1)
+    engine.mark(1, "STARFRUIT", sf_depth, fair_value=5000, num_fills=1)
+    portfolio = engine.mark_portfolio(1)
+
+    assert portfolio.symbol == "PORTFOLIO"
+    assert portfolio.num_fills == 2
+    assert portfolio.total_pnl_fair == 0
+    assert len(engine.get_portfolio_history()) == 1

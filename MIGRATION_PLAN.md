@@ -22,3 +22,11 @@ These are intentionally introduced as clean modules first, before wiring them in
 4. Add passive fills through `MakerMatcher`.
 5. Replace legacy PnL dictionaries with `AccountingEngine`.
 6. Add tests for order lifecycle, matching, and marking.
+
+
+## Phase 4 status
+
+- AccountingEngine now drives per-symbol and portfolio PnL snapshots.
+- ExchangeBacktester activities log now includes realized / unrealized / total PnL columns.
+- Queue-aware maker matching remains enabled from Phase 3.
+- Next major step: adapt analysis scripts and submission workflow around the richer logs.
