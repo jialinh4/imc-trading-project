@@ -6,6 +6,8 @@ from typing import Dict, List, Optional
 
 from datamodel import Order, OrderDepth
 
+from .queue_tracker import QueueTracker
+
 
 class Side(str, Enum):
     BUY = "BUY"
@@ -58,20 +60,20 @@ class OrderManager:
     """
     Order lifecycle + active resting order book.
 
-    Phase 2 scope:
-    - persistent identity and order state
-    - symbol/price aware resting order registry
-    - cancel/replace compatibility mode
-    - helpers for cross-timestamp maker matching
+    Phase 3 scope additions:
+    - queue_ahead_qty is initialized via QueueTracker
+    - resting order retrieval supports side-aware priority traversal
+    - resting order book keeps price-level structure for queue-aware maker matching
     """
 
     ACTIVE_STATUSES = {OrderStatus.NEW, OrderStatus.ACTIVE, OrderStatus.PARTIAL}
 
-    def __init__(self) -> None:
+    def __init__(self, queue_tracker: Optional[QueueTracker] = None) -> None:
         self._counter = 0
         self.orders: Dict[str, ManagedOrder] = {}
         self.resting_bids: Dict[str, Dict[float, List[str]]] = {}
         self.resting_asks: Dict[str, Dict[float, List[str]]] = {}
+        self.queue_tracker = queue_tracker or QueueTracker()
 
     def _next_order_id(self) -> str:
         self._counter += 1
@@ -88,29 +90,6 @@ class OrderManager:
         if side == Side.BUY:
             return bool(order_depth.sell_orders) and price >= min(order_depth.sell_orders.keys())
         return bool(order_depth.buy_orders) and price <= max(order_depth.buy_orders.keys())
-
-    def _estimate_queue_ahead_qty(
-        self,
-        side: Side,
-        price: float,
-        order_depth: Optional[OrderDepth],
-        is_aggressive: bool,
-    ) -> int:
-        if order_depth is None or is_aggressive:
-            return 0
-        if side == Side.BUY:
-            if price in order_depth.buy_orders:
-                return max(int(order_depth.buy_orders[price]), 0)
-            best_bid = max(order_depth.buy_orders.keys()) if order_depth.buy_orders else None
-            if best_bid is None or price > best_bid:
-                return 0
-            return 0
-        if price in order_depth.sell_orders:
-            return max(abs(int(order_depth.sell_orders[price])), 0)
-        best_ask = min(order_depth.sell_orders.keys()) if order_depth.sell_orders else None
-        if best_ask is None or price < best_ask:
-            return 0
-        return 0
 
     def submit_order(
         self,
@@ -150,7 +129,12 @@ class OrderManager:
         side = self._infer_side(order.quantity)
         quantity = abs(int(order.quantity))
         is_aggressive = self._detect_aggressive(side, float(order.price), order_depth)
-        queue_ahead_qty = self._estimate_queue_ahead_qty(side, float(order.price), order_depth, is_aggressive)
+        queue_ahead_qty = self.queue_tracker.estimate_queue_ahead_qty(
+            side=side,
+            price=float(order.price),
+            order_depth=order_depth,
+            is_aggressive=is_aggressive,
+        )
         managed = self.submit_order(
             symbol=order.symbol,
             side=side,
@@ -222,19 +206,30 @@ class OrderManager:
             active = [o for o in active if o.symbol == symbol]
         return active
 
-    def _flatten_resting_side(self, side: Side, symbol: Optional[str] = None) -> List[ManagedOrder]:
+    def get_resting_orders(self, symbol: Optional[str] = None, side: Optional[Side] = None) -> List[ManagedOrder]:
+        if side is not None:
+            return self._flatten_resting_side(side, symbol)
+        return self._flatten_resting_side(Side.BUY, symbol) + self._flatten_resting_side(Side.SELL, symbol)
+
+    def get_resting_price_levels(self, side: Side, symbol: Optional[str] = None) -> List[List[ManagedOrder]]:
         registry = self._registry_for_side(side)
         symbols = [symbol] if symbol is not None else list(registry.keys())
-        flattened: List[ManagedOrder] = []
+        levels: List[List[ManagedOrder]] = []
         for sym in symbols:
             symbol_book = registry.get(sym, {})
             prices = sorted(symbol_book.keys(), reverse=(side == Side.BUY))
             for price in prices:
+                orders_at_price: List[ManagedOrder] = []
                 for order_id in list(symbol_book.get(price, [])):
                     order = self.orders[order_id]
                     if order.status in self.ACTIVE_STATUSES and order.remaining_qty > 0:
-                        flattened.append(order)
-        return flattened
+                        orders_at_price.append(order)
+                if orders_at_price:
+                    levels.append(orders_at_price)
+        return levels
 
-    def get_resting_orders(self, symbol: Optional[str] = None) -> List[ManagedOrder]:
-        return self._flatten_resting_side(Side.BUY, symbol) + self._flatten_resting_side(Side.SELL, symbol)
+    def _flatten_resting_side(self, side: Side, symbol: Optional[str] = None) -> List[ManagedOrder]:
+        flattened: List[ManagedOrder] = []
+        for level in self.get_resting_price_levels(side=side, symbol=symbol):
+            flattened.extend(level)
+        return flattened

@@ -47,8 +47,51 @@ def test_maker_matcher_fills_resting_order_on_later_trade_flow() -> None:
     ]
 
     matcher = MakerMatcher(manager)
-    fills = matcher.match_resting_order(order, trade_flow, ts=100)
+    fills = matcher.match_resting_order(order, trade_flow, ts=100, queue_model="none")
 
     assert [fill.fill_qty for fill in fills] == [4, 2]
     assert [fill.fill_price for fill in fills] == [100, 100]
     assert manager.orders[order.order_id].status == OrderStatus.FILLED
+
+
+def test_queue_simple_absorbs_ahead_volume_before_filling() -> None:
+    manager = OrderManager()
+    order = manager.submit_order(
+        symbol="STARFRUIT",
+        side=Side.BUY,
+        price=100,
+        quantity=5,
+        ts=0,
+        is_aggressive=False,
+        queue_ahead_qty=3,
+    )
+    manager._add_resting_order(order)
+
+    trade_flow = [
+        Trade(symbol="STARFRUIT", price=100, quantity=2, buyer="", seller="", timestamp=100),
+        Trade(symbol="STARFRUIT", price=100, quantity=4, buyer="", seller="", timestamp=100),
+    ]
+
+    fills = MakerMatcher(manager).match_resting_order(order, trade_flow, ts=100, queue_model="simple")
+
+    assert [fill.fill_qty for fill in fills] == [3]
+    assert manager.orders[order.order_id].remaining_qty == 2
+    assert manager.orders[order.order_id].queue_ahead_qty == 0
+
+
+def test_maker_matcher_respects_price_priority_across_orders() -> None:
+    manager = OrderManager()
+    buy_best = manager.submit_order("STARFRUIT", Side.BUY, 100, 2, ts=0, is_aggressive=False)
+    buy_worse = manager.submit_order("STARFRUIT", Side.BUY, 99, 2, ts=0, is_aggressive=False)
+
+    trade_flow = [Trade(symbol="STARFRUIT", price=99, quantity=3, buyer="", seller="", timestamp=100)]
+
+    matcher = MakerMatcher(manager)
+    fills = matcher.match_resting_orders([buy_best, buy_worse], trade_flow, ts=100, queue_model="none")
+
+    assert [(fill.order_id, fill.fill_qty) for fill in fills] == [
+        (buy_best.order_id, 2),
+        (buy_worse.order_id, 1),
+    ]
+    assert manager.orders[buy_best.order_id].status == OrderStatus.FILLED
+    assert manager.orders[buy_worse.order_id].remaining_qty == 1

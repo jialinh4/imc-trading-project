@@ -10,20 +10,21 @@ from datamodel import Listing, Observation, Order, OrderDepth, Trade, TradingSta
 from .accounting import AccountingEngine
 from .matching import Fill, MakerMatcher, TakerMatcher
 from .order_manager import ManagedOrder, OrderManager, Side, TimeInForce
+from .queue_tracker import QueueModel, QueueTracker
 
 
 class ExchangeBacktester:
     """
-    Phase 2 exchange-style backtester.
+    Phase 3 exchange-style backtester.
 
     Included in this phase:
-    - passive GFD orders can persist across timestamps
-    - resting orders can be filled by later timestamp trade flow
-    - own_trades reflects fills since the previous strategy callback
-    - optional cancel/replace compatibility mode for unchanged Trader.run() APIs
+    - queue-aware maker matching for resting passive orders
+    - price-priority then FIFO matching across multiple resting orders
+    - queue_model='simple' as the default passive fill model
+    - 'none' compatibility mode remains available for comparison
 
     Deferred to later phases:
-    - richer queue models
+    - pro-rata queue model
     - full accounting/log output migration
     """
 
@@ -38,7 +39,7 @@ class ExchangeBacktester:
         file_name: str | None = None,
         resting_mode: str = "cancel_replace",
         default_tif: TimeInForce = TimeInForce.GFD,
-        queue_model: str = "none",
+        queue_model: str = "simple",
     ):
         self.trader = trader
         self.listings = listings
@@ -49,12 +50,13 @@ class ExchangeBacktester:
         self.file_name = file_name
         self.resting_mode = resting_mode
         self.default_tif = default_tif
-        self.queue_model = queue_model
+        self.queue_model = QueueModel(queue_model).value
 
         self.observations = [Observation({}, {}) for _ in range(len(market_data))]
-        self.order_manager = OrderManager()
+        self.queue_tracker = QueueTracker()
+        self.order_manager = OrderManager(queue_tracker=self.queue_tracker)
         self.taker_matcher = TakerMatcher(self.order_manager)
-        self.maker_matcher = MakerMatcher(self.order_manager)
+        self.maker_matcher = MakerMatcher(self.order_manager, queue_tracker=self.queue_tracker)
         self.accounting = AccountingEngine()
 
         self.current_position = {product: 0 for product in self.listings.keys()}
@@ -140,12 +142,13 @@ class ExchangeBacktester:
                 market_trades=dict(market_trades_for_state),
             )
 
+            current_order_depths = self._construct_order_depths(group)
             for product in group["product"].tolist():
                 fair_value = self._compute_fair_value(product, timestamp, group)
                 snapshot = self.accounting.mark(
                     timestamp=timestamp,
                     symbol=product,
-                    order_depth=self._construct_order_depths(group)[product],
+                    order_depth=current_order_depths[product],
                     fair_value=fair_value,
                     num_fills=len(fills_at_timestamp.get(product, [])),
                 )
@@ -189,13 +192,23 @@ class ExchangeBacktester:
         if not trade_flow:
             return fills_by_symbol
 
-        for order in list(self.order_manager.get_resting_orders()):
-            fills = self.maker_matcher.match_resting_order(order, trade_flow, timestamp, queue_model=self.queue_model)
-            for fill in fills:
-                signed_qty = fill.fill_qty if order.side == Side.BUY else -fill.fill_qty
-                self.accounting.record_fill(fill, signed_qty=signed_qty)
-                self.current_position[fill.symbol] = self.accounting.position.get(fill.symbol, 0)
-                fills_by_symbol[fill.symbol].append(fill)
+        symbols = sorted({trade.symbol for trade in trade_flow})
+        for symbol in symbols:
+            symbol_trade_flow = [trade for trade in trade_flow if trade.symbol == symbol]
+            for side in (Side.BUY, Side.SELL):
+                for orders_at_price in self.order_manager.get_resting_price_levels(side=side, symbol=symbol):
+                    fills = self.maker_matcher.match_resting_orders(
+                        orders_at_price,
+                        symbol_trade_flow,
+                        timestamp,
+                        queue_model=self.queue_model,
+                    )
+                    for fill in fills:
+                        managed = self.order_manager.orders[fill.order_id]
+                        signed_qty = fill.fill_qty if managed.side == Side.BUY else -fill.fill_qty
+                        self.accounting.record_fill(fill, signed_qty=signed_qty)
+                        self.current_position[fill.symbol] = self.accounting.position.get(fill.symbol, 0)
+                        fills_by_symbol[fill.symbol].append(fill)
         return fills_by_symbol
 
     def _match_aggressive_order(
@@ -320,15 +333,10 @@ class ExchangeBacktester:
                 bid_volume_key = f"bid_volume_{level}"
                 ask_price_key = f"ask_price_{level}"
                 ask_volume_key = f"ask_volume_{level}"
-                if bid_price_key in row and bid_volume_key in row:
-                    bid_price = row[bid_price_key]
-                    bid_volume = row[bid_volume_key]
-                    if not pd.isna(bid_price) and not pd.isna(bid_volume):
-                        order_depth.buy_orders[int(bid_price)] = int(bid_volume)
-                if ask_price_key in row and ask_volume_key in row:
-                    ask_price = row[ask_price_key]
-                    ask_volume = row[ask_volume_key]
-                    if not pd.isna(ask_price) and not pd.isna(ask_volume):
-                        order_depth.sell_orders[int(ask_price)] = -int(ask_volume)
+
+                if not pd.isna(row[bid_price_key]):
+                    order_depth.buy_orders[int(row[bid_price_key])] = int(row[bid_volume_key])
+                if not pd.isna(row[ask_price_key]):
+                    order_depth.sell_orders[int(row[ask_price_key])] = -int(row[ask_volume_key])
             order_depths[product] = order_depth
         return order_depths
