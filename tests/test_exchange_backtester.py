@@ -17,6 +17,16 @@ class StaticTrader:
         return self.schedule.get(state.timestamp, {}), 1, ""
 
 
+class CapturingTrader:
+    def __init__(self, schedule):
+        self.schedule = schedule
+        self.seen_states = []
+
+    def run(self, state):
+        self.seen_states.append(state)
+        return self.schedule.get(state.timestamp, {}), 1, ""
+
+
 def _market_data() -> pd.DataFrame:
     rows = []
     for timestamp in [0, 100]:
@@ -80,3 +90,79 @@ def test_exchange_backtester_keeps_passive_gfd_order_when_persistent() -> None:
     only_order = next(iter(backtester.order_manager.orders.values()))
     assert only_order.status == OrderStatus.EXPIRED
     assert only_order.remaining_qty == 2
+
+
+def test_exchange_backtester_fills_resting_order_on_next_timestamp() -> None:
+    trader = StaticTrader({0: {Product.AMETHYSTS: [Order(Product.AMETHYSTS, 10000, 3)]}, 100: {}})
+    trade_history = pd.DataFrame(
+        [
+            {
+                "timestamp": 100,
+                "symbol": Product.AMETHYSTS,
+                "price": 9999,
+                "quantity": 2,
+                "buyer": "A",
+                "seller": "B",
+            },
+            {
+                "timestamp": 100,
+                "symbol": Product.AMETHYSTS,
+                "price": 10000,
+                "quantity": 2,
+                "buyer": "C",
+                "seller": "D",
+            },
+        ]
+    )
+    backtester = ExchangeBacktester(
+        trader=trader,
+        listings={Product.AMETHYSTS: LISTINGS[Product.AMETHYSTS]},
+        position_limit={Product.AMETHYSTS: POSITION_LIMITS[Product.AMETHYSTS]},
+        fair_marks={Product.AMETHYSTS: lambda *_args, **_kwargs: 10000},
+        market_data=_market_data(),
+        trade_history=trade_history,
+        resting_mode="persistent",
+    )
+
+    backtester.run()
+
+    only_order = next(iter(backtester.order_manager.orders.values()))
+    assert only_order.status == OrderStatus.FILLED
+    assert backtester.current_position[Product.AMETHYSTS] == 3
+    assert backtester.cash[Product.AMETHYSTS] == -30000
+
+
+def test_exchange_backtester_passes_incremental_own_trades_to_next_callback() -> None:
+    trader = CapturingTrader({0: {Product.AMETHYSTS: [Order(Product.AMETHYSTS, 10000, 2)]}, 100: {}})
+    trade_history = pd.DataFrame(
+        [
+            {
+                "timestamp": 100,
+                "symbol": Product.AMETHYSTS,
+                "price": 10000,
+                "quantity": 2,
+                "buyer": "A",
+                "seller": "B",
+            }
+        ]
+    )
+    backtester = ExchangeBacktester(
+        trader=trader,
+        listings={Product.AMETHYSTS: LISTINGS[Product.AMETHYSTS]},
+        position_limit={Product.AMETHYSTS: POSITION_LIMITS[Product.AMETHYSTS]},
+        fair_marks={Product.AMETHYSTS: lambda *_args, **_kwargs: 10000},
+        market_data=_market_data(),
+        trade_history=trade_history,
+        resting_mode="persistent",
+    )
+
+    backtester.run()
+
+    assert len(trader.seen_states) == 2
+    second_state = trader.seen_states[1]
+    assert Product.AMETHYSTS in second_state.own_trades
+    assert len(second_state.own_trades[Product.AMETHYSTS]) == 1
+    own_trade = second_state.own_trades[Product.AMETHYSTS][0]
+    assert own_trade.price == 10000
+    assert own_trade.quantity == 2
+    assert second_state.position[Product.AMETHYSTS] == 2

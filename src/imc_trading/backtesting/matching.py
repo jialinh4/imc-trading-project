@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List
+from typing import Iterable, List
 
-from datamodel import OrderDepth
+from datamodel import OrderDepth, Trade
 
 from .order_manager import ManagedOrder, OrderManager, Side
 
@@ -21,8 +21,6 @@ class Fill:
 class TakerMatcher:
     """
     Deterministic matcher for aggressive orders.
-    This is the first new execution module that should replace the legacy
-    _execute_buy_order / _execute_sell_order behavior.
     """
 
     def __init__(self, order_manager: OrderManager) -> None:
@@ -61,14 +59,52 @@ class TakerMatcher:
 
 class MakerMatcher:
     """
-    Placeholder for the cross-timestamp passive execution model.
-    Current notebook behavior uses same-timestamp trade history in an optimistic way.
-    This class exists so the project can migrate to the target architecture without
-    changing the strategy API again.
+    Cross-timestamp passive matcher.
+
+    Phase 2 scope:
+    - use trade flow at later timestamps to fill resting GFD orders
+    - support queue_model='none' or 'simple'
+    - fill passive orders at the resting order price
     """
 
     def __init__(self, order_manager: OrderManager) -> None:
         self.order_manager = order_manager
 
-    def match_resting_order(self, order: ManagedOrder, trade_flow: list, ts: int) -> List[Fill]:
-        return []
+    def match_resting_order(
+        self,
+        order: ManagedOrder,
+        trade_flow: Iterable[Trade],
+        ts: int,
+        queue_model: str = "none",
+    ) -> List[Fill]:
+        fills: List[Fill] = []
+        if order.remaining_qty <= 0:
+            return fills
+
+        for trade in trade_flow:
+            if trade.symbol != order.symbol or order.remaining_qty <= 0:
+                continue
+            marketable_volume = self._marketable_volume(order, trade)
+            if marketable_volume <= 0:
+                continue
+
+            if queue_model == "simple" and order.queue_ahead_qty > 0:
+                absorbed = min(marketable_volume, order.queue_ahead_qty)
+                order.queue_ahead_qty -= absorbed
+                marketable_volume -= absorbed
+
+            if marketable_volume <= 0:
+                continue
+
+            fill_qty = min(marketable_volume, order.remaining_qty)
+            self.order_manager.fill(order.order_id, fill_qty, order.price, ts)
+            fills.append(Fill(order.order_id, order.symbol, order.price, fill_qty, "maker", ts))
+
+        return fills
+
+    def _marketable_volume(self, order: ManagedOrder, trade: Trade) -> int:
+        if order.side == Side.BUY and trade.price <= order.price:
+            return int(trade.quantity)
+        if order.side == Side.SELL and trade.price >= order.price:
+            return int(trade.quantity)
+        return 0

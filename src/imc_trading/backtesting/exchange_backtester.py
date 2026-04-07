@@ -14,18 +14,17 @@ from .order_manager import ManagedOrder, OrderManager, Side, TimeInForce
 
 class ExchangeBacktester:
     """
-    Phase 1 exchange-style backtester.
+    Phase 2 exchange-style backtester.
 
     Included in this phase:
-    - OrderManager integration for persistent order identity/state
-    - aggressive order execution via TakerMatcher only
-    - accounting routed through AccountingEngine
-    - optional cancel/replace for resting orders to preserve Trader.run() API
+    - passive GFD orders can persist across timestamps
+    - resting orders can be filled by later timestamp trade flow
+    - own_trades reflects fills since the previous strategy callback
+    - optional cancel/replace compatibility mode for unchanged Trader.run() APIs
 
     Deferred to later phases:
-    - cross-timestamp maker fills
-    - queue-aware passive execution
-    - richer log outputs and portfolio analytics
+    - richer queue models
+    - full accounting/log output migration
     """
 
     def __init__(
@@ -71,36 +70,48 @@ class ExchangeBacktester:
         timestamp_group_th = self.trade_history.groupby("timestamp")
         trade_history_dict = self._build_trade_history_dict(timestamp_group_th)
 
-        own_trades_since_last: Dict[str, List[Trade]] = defaultdict(list)
-        market_trades_since_last: Dict[str, List[Trade]] = defaultdict(list)
+        pending_own_trades: Dict[str, List[Trade]] = defaultdict(list)
 
         for timestamp, group in timestamp_group_md:
             order_depths = self._construct_order_depths(group)
             order_depths_matching = self._construct_order_depths(group)
+            sandbox_log = ""
+
+            market_trades_now = trade_history_dict.get(int(timestamp), [])
+            market_trades_for_state: Dict[str, List[Trade]] = defaultdict(list)
+            for trade in market_trades_now:
+                market_trades_for_state[trade.symbol].append(trade)
+
+            resting_fills_at_timestamp = self._match_resting_orders(timestamp, market_trades_now)
+            for product, fills in resting_fills_at_timestamp.items():
+                pending_own_trades[product].extend(
+                    [self._fill_to_trade(fill, self.order_manager.orders[fill.order_id], timestamp) for fill in fills]
+                )
+
             state = self._construct_trading_state(
                 trader_data,
                 timestamp,
                 self.listings,
                 order_depths,
-                dict(own_trades_since_last),
-                dict(market_trades_since_last),
+                dict(pending_own_trades),
+                dict(market_trades_for_state),
                 dict(self.current_position),
                 self.observations,
             )
-            own_trades_since_last = defaultdict(list)
-            market_trades_since_last = defaultdict(list)
+            pending_own_trades = defaultdict(list)
 
             orders, conversions, trader_data = self.trader.run(state)
             _ = conversions
-            sandbox_log = ""
 
-            for product in group["product"].tolist():
-                if self.resting_mode == "cancel_replace":
+            if self.resting_mode == "cancel_replace":
+                for product in group["product"].tolist():
                     self.order_manager.cancel_symbol_orders(product, timestamp)
 
             fills_at_timestamp: Dict[str, List[Fill]] = defaultdict(list)
-            raw_orders = self._normalize_orders(orders)
+            for product, fills in resting_fills_at_timestamp.items():
+                fills_at_timestamp[product].extend(fills)
 
+            raw_orders = self._normalize_orders(orders)
             for product, product_orders in raw_orders.items():
                 order_depth = order_depths_matching[product]
                 for raw_order in product_orders:
@@ -118,18 +129,16 @@ class ExchangeBacktester:
                             sandbox_log,
                         )
                         fills_at_timestamp[product].extend(fills)
+                        pending_own_trades[product].extend(
+                            [self._fill_to_trade(fill, self.order_manager.orders[fill.order_id], timestamp) for fill in fills]
+                        )
                     if managed.tif == TimeInForce.IOC and managed.remaining_qty > 0:
                         self.order_manager.cancel(managed.order_id, timestamp)
 
-            market_trades_now = trade_history_dict.get(timestamp, [])
-            for trade in market_trades_now:
-                market_trades_since_last[trade.symbol].append(trade)
-
-            for product, fills in fills_at_timestamp.items():
-                converted = [self._fill_to_trade(fill, self.order_manager.orders[fill.order_id], timestamp) for fill in fills]
-                own_trades_since_last[product].extend(converted)
-
-            self._append_trades(own_trades_since_last, market_trades_since_last)
+            self._append_trades(
+                own_trades=self._convert_fills_to_trade_dict(fills_at_timestamp),
+                market_trades=dict(market_trades_for_state),
+            )
 
             for product in group["product"].tolist():
                 fair_value = self._compute_fair_value(product, timestamp, group)
@@ -175,6 +184,20 @@ class ExchangeBacktester:
             return {symbol: list(symbol_orders) for symbol, symbol_orders in orders.items()}
         raise TypeError("Trader.run() must return a dict[str, list[Order]] as first value.")
 
+    def _match_resting_orders(self, timestamp: int, trade_flow: List[Trade]) -> Dict[str, List[Fill]]:
+        fills_by_symbol: Dict[str, List[Fill]] = defaultdict(list)
+        if not trade_flow:
+            return fills_by_symbol
+
+        for order in list(self.order_manager.get_resting_orders()):
+            fills = self.maker_matcher.match_resting_order(order, trade_flow, timestamp, queue_model=self.queue_model)
+            for fill in fills:
+                signed_qty = fill.fill_qty if order.side == Side.BUY else -fill.fill_qty
+                self.accounting.record_fill(fill, signed_qty=signed_qty)
+                self.current_position[fill.symbol] = self.accounting.position.get(fill.symbol, 0)
+                fills_by_symbol[fill.symbol].append(fill)
+        return fills_by_symbol
+
     def _match_aggressive_order(
         self,
         managed: ManagedOrder,
@@ -196,6 +219,14 @@ class ExchangeBacktester:
             self.current_position[fill.symbol] = self.accounting.position.get(fill.symbol, 0)
             accepted_fills.append(fill)
         return accepted_fills
+
+    def _convert_fills_to_trade_dict(self, fills_by_symbol: Dict[str, List[Fill]]) -> Dict[str, List[Trade]]:
+        converted: Dict[str, List[Trade]] = defaultdict(list)
+        for product, fills in fills_by_symbol.items():
+            for fill in fills:
+                managed = self.order_manager.orders[fill.order_id]
+                converted[product].append(self._fill_to_trade(fill, managed, fill.timestamp))
+        return converted
 
     def _fill_to_trade(self, fill: Fill, managed: ManagedOrder, timestamp: int) -> Trade:
         if managed.side == Side.BUY:
