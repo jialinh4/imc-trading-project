@@ -1,3 +1,5 @@
+from datamodel import OrderDepth, Order
+
 from imc_trading.backtesting.order_manager import OrderManager, OrderStatus, Side, TimeInForce
 
 
@@ -24,3 +26,16 @@ def test_order_manager_lifecycle() -> None:
     remaining = manager.cancel(order.order_id, ts=102)
     assert remaining == 6
     assert updated.status == OrderStatus.CANCELED
+
+
+def test_submit_raw_order_detects_aggressive_and_resting() -> None:
+    manager = OrderManager()
+    depth = OrderDepth(buy_orders={99: 5}, sell_orders={101: -7})
+
+    aggressive = manager.submit_raw_order(Order("STARFRUIT", 101, 3), ts=0, order_depth=depth)
+    passive = manager.submit_raw_order(Order("STARFRUIT", 100, 4), ts=0, order_depth=depth)
+
+    assert aggressive.is_aggressive is True
+    assert passive.is_aggressive is False
+    assert passive.queue_ahead_qty == 0
+    assert [order.order_id for order in manager.get_resting_orders("STARFRUIT")] == [passive.order_id]
