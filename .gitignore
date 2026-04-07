@@ -1,0 +1,57 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Tool caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Local data and experiment outputs
+logs/*.log
+logs/*.csv
+logs/*.json
+logs/*.parquet
+outputs/**
+!outputs/.gitkeep
+data/**/*.csv
+data/**/*.parquet
+data/**/*.feather
+data/**/*.pickle
+data/**/*.pkl
+data/**/*.json
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+
+# IMC local files
+/datamodel.py
+/trader_data/
+
+# Editors / OS
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Environment files
+.env
+.env.*
