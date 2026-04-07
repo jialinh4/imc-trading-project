@@ -1,9 +1,20 @@
-from datamodel import OrderDepth, UserId, TradingState, Order
+from datamodel import OrderDepth, TradingState, Order
 from typing import List
-import string
-import jsonpickle
-import numpy as np
-import math
+import json
+
+try:
+    import jsonpickle  # type: ignore
+except ModuleNotFoundError:
+    class _JsonPickleCompat:
+        @staticmethod
+        def encode(value):
+            return json.dumps(value)
+
+        @staticmethod
+        def decode(value):
+            return json.loads(value)
+
+    jsonpickle = _JsonPickleCompat()
 
 
 class Product:
