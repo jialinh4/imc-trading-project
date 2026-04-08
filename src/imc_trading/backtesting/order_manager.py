@@ -56,13 +56,13 @@ class ManagedOrder:
 
 class OrderManager:
     """
-    Order lifecycle + resting order registry.
+    Order lifecycle + active resting order book.
 
-    Phase 1 scope:
+    Phase 2 scope:
     - persistent identity and order state
-    - aggressive/passive detection against current book
-    - basic resting order retention for GFD orders
-    - symbol-level cancel/replace helper for backward-compatible strategy API
+    - symbol/price aware resting order registry
+    - cancel/replace compatibility mode
+    - helpers for cross-timestamp maker matching
     """
 
     ACTIVE_STATUSES = {OrderStatus.NEW, OrderStatus.ACTIVE, OrderStatus.PARTIAL}
@@ -70,8 +70,8 @@ class OrderManager:
     def __init__(self) -> None:
         self._counter = 0
         self.orders: Dict[str, ManagedOrder] = {}
-        self.resting_bids: Dict[str, List[str]] = {}
-        self.resting_asks: Dict[str, List[str]] = {}
+        self.resting_bids: Dict[str, Dict[float, List[str]]] = {}
+        self.resting_asks: Dict[str, Dict[float, List[str]]] = {}
 
     def _next_order_id(self) -> str:
         self._counter += 1
@@ -165,16 +165,25 @@ class OrderManager:
             self._add_resting_order(managed)
         return managed
 
+    def _registry_for_side(self, side: Side) -> Dict[str, Dict[float, List[str]]]:
+        return self.resting_bids if side == Side.BUY else self.resting_asks
+
     def _add_resting_order(self, order: ManagedOrder) -> None:
-        registry = self.resting_bids if order.side == Side.BUY else self.resting_asks
-        registry.setdefault(order.symbol, []).append(order.order_id)
+        registry = self._registry_for_side(order.side)
+        symbol_book = registry.setdefault(order.symbol, {})
+        symbol_book.setdefault(order.price, []).append(order.order_id)
 
     def _remove_resting_order(self, order: ManagedOrder) -> None:
-        registry = self.resting_bids if order.side == Side.BUY else self.resting_asks
-        ids = registry.get(order.symbol, [])
-        if order.order_id in ids:
-            ids.remove(order.order_id)
-        if not ids and order.symbol in registry:
+        registry = self._registry_for_side(order.side)
+        symbol_book = registry.get(order.symbol)
+        if not symbol_book:
+            return
+        ids_at_price = symbol_book.get(order.price, [])
+        if order.order_id in ids_at_price:
+            ids_at_price.remove(order.order_id)
+        if not ids_at_price and order.price in symbol_book:
+            del symbol_book[order.price]
+        if not symbol_book and order.symbol in registry:
             del registry[order.symbol]
 
     def fill(self, order_id: str, qty: int, price: float, ts: int) -> ManagedOrder:
@@ -201,7 +210,7 @@ class OrderManager:
         return canceled
 
     def expire_all(self, ts: int) -> None:
-        for order in self.orders.values():
+        for order in list(self.orders.values()):
             if order.tif == TimeInForce.GFD and order.status in self.ACTIVE_STATUSES:
                 order.status = OrderStatus.EXPIRED
                 order.last_update_ts = ts
@@ -213,8 +222,19 @@ class OrderManager:
             active = [o for o in active if o.symbol == symbol]
         return active
 
+    def _flatten_resting_side(self, side: Side, symbol: Optional[str] = None) -> List[ManagedOrder]:
+        registry = self._registry_for_side(side)
+        symbols = [symbol] if symbol is not None else list(registry.keys())
+        flattened: List[ManagedOrder] = []
+        for sym in symbols:
+            symbol_book = registry.get(sym, {})
+            prices = sorted(symbol_book.keys(), reverse=(side == Side.BUY))
+            for price in prices:
+                for order_id in list(symbol_book.get(price, [])):
+                    order = self.orders[order_id]
+                    if order.status in self.ACTIVE_STATUSES and order.remaining_qty > 0:
+                        flattened.append(order)
+        return flattened
+
     def get_resting_orders(self, symbol: Optional[str] = None) -> List[ManagedOrder]:
-        active = [o for o in self.orders.values() if o.status in self.ACTIVE_STATUSES and not o.is_aggressive and o.remaining_qty > 0]
-        if symbol is not None:
-            active = [o for o in active if o.symbol == symbol]
-        return active
+        return self._flatten_resting_side(Side.BUY, symbol) + self._flatten_resting_side(Side.SELL, symbol)
