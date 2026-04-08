@@ -416,7 +416,7 @@ class Trader:
                 starfruit_take_orders + starfruit_clear_orders + starfruit_make_orders
             )
 
-        conversions = 1
+        conversions = 0
         traderData = jsonpickle.encode(traderObject)
 
         return result, conversions, traderData

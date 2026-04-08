@@ -53,7 +53,7 @@ class ExchangeBacktester:
         self.queue_model = QueueModel(queue_model).value
         self.liquidation_slippage = float(liquidation_slippage)
 
-        self.observations = [Observation({}, {}) for _ in range(len(market_data))]
+        self.observations = Observation({}, {})
         self.queue_tracker = QueueTracker()
         self.order_manager = OrderManager(queue_tracker=self.queue_tracker)
         self.taker_matcher = TakerMatcher(self.order_manager)
@@ -388,7 +388,7 @@ class ExchangeBacktester:
         own_trades: Dict[str, List[Trade]],
         market_trades: Dict[str, List[Trade]],
         position: Dict[str, int],
-        observations: List[Observation],
+        observations: Observation,
     ) -> TradingState:
         return TradingState(
             trader_data,

@@ -16,7 +16,7 @@ class Backtester:
         self.trade_history = trade_history.sort_values(by=['timestamp', 'symbol'])
         self.file_name = file_name
 
-        self.observations = [Observation({}, {}) for _ in range(len(market_data))]
+        self.observations = Observation({}, {})
 
         self.current_position = {product: 0 for product in self.listings.keys()}
         self.pnl_history = []

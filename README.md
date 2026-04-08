@@ -18,6 +18,20 @@ This repository started as a migration from `backtester-refined.ipynb` into a ma
 - New architecture scaffolding exists for order management, matching, and accounting
 - The new execution flow is **not yet** fully wired into the main backtest loop
 
+
+## To run the tests and smoke runs
+
+- Tests
+```
+pytest -q
+```
+
+- Smoke runs
+
+```
+PYTHONPATH=src:. python scripts/smoke_run_exchange.py
+```
+
 ## Project layout
 
 ```text
