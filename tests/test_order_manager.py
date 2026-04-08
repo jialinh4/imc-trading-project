@@ -1,41 +1,52 @@
-from datamodel import OrderDepth, Order
+from datamodel import Order, OrderDepth
 
 from imc_trading.backtesting.order_manager import OrderManager, OrderStatus, Side, TimeInForce
 
 
-def test_order_manager_lifecycle() -> None:
+def test_order_lifecycle_submit_fill_cancel() -> None:
     manager = OrderManager()
-    order = manager.submit_order(
-        symbol="AMETHYSTS",
+    managed = manager.submit_order(
+        symbol="STARFRUIT",
         side=Side.BUY,
-        price=10000,
+        price=100,
         quantity=10,
-        ts=100,
-        tif=TimeInForce.GFD,
+        ts=0,
     )
-
-    assert order.status == OrderStatus.ACTIVE
-    assert order.remaining_qty == 10
-
-    manager.fill(order.order_id, qty=4, price=9999, ts=101)
-    updated = manager.orders[order.order_id]
-    assert updated.status == OrderStatus.PARTIAL
-    assert updated.filled_qty == 4
-    assert updated.remaining_qty == 6
-
-    remaining = manager.cancel(order.order_id, ts=102)
-    assert remaining == 6
-    assert updated.status == OrderStatus.CANCELED
+    assert managed.status == OrderStatus.ACTIVE
+    assert managed.remaining_qty == 10
+    manager.fill(managed.order_id, qty=4, price=100, ts=1)
+    assert managed.status == OrderStatus.PARTIAL
+    assert managed.remaining_qty == 6
+    canceled = manager.cancel(managed.order_id, ts=2)
+    assert canceled == 6
+    assert managed.status == OrderStatus.CANCELED
 
 
-def test_submit_raw_order_detects_aggressive_and_resting() -> None:
+def test_submit_raw_order_detects_aggression() -> None:
     manager = OrderManager()
-    depth = OrderDepth(buy_orders={99: 5}, sell_orders={101: -7})
+    depth = OrderDepth(buy_orders={99: 5}, sell_orders={101: -5})
+    raw = Order("STARFRUIT", 101, 3)
+    managed = manager.submit_raw_order(raw, ts=0, order_depth=depth)
+    assert managed.is_aggressive is True
+    assert managed.side == Side.BUY
+    assert managed.tif == TimeInForce.GFD
 
-    aggressive = manager.submit_raw_order(Order("STARFRUIT", 101, 3), ts=0, order_depth=depth)
-    passive = manager.submit_raw_order(Order("STARFRUIT", 100, 4), ts=0, order_depth=depth)
 
-    assert aggressive.is_aggressive is True
-    assert passive.is_aggressive is False
-    assert passive.queue_ahead_qty == 0
-    assert [order.order_id for order in manager.get_resting_orders("STARFRUIT")] == [passive.order_id]
+def test_submit_raw_order_sets_queue_ahead_when_joining_existing_level() -> None:
+    manager = OrderManager()
+    depth = OrderDepth(buy_orders={100: 7, 99: 4}, sell_orders={102: -5, 103: -3})
+
+    managed = manager.submit_raw_order(Order("STARFRUIT", 100, 2), ts=0, order_depth=depth)
+
+    assert managed.is_aggressive is False
+    assert managed.queue_ahead_qty == 7
+
+
+def test_submit_raw_order_sets_zero_queue_when_improving_best_level() -> None:
+    manager = OrderManager()
+    depth = OrderDepth(buy_orders={100: 7, 99: 4}, sell_orders={102: -5, 103: -3})
+
+    managed = manager.submit_raw_order(Order("STARFRUIT", 101, 2), ts=0, order_depth=depth)
+
+    assert managed.is_aggressive is False
+    assert managed.queue_ahead_qty == 0

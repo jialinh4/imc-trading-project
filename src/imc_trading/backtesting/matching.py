@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable, List
+from typing import Iterable, List, Sequence
 
 from datamodel import OrderDepth, Trade
 
 from .order_manager import ManagedOrder, OrderManager, Side
+from .queue_tracker import QueueModel, QueueTracker
 
 
 @dataclass
@@ -59,52 +60,72 @@ class TakerMatcher:
 
 class MakerMatcher:
     """
-    Cross-timestamp passive matcher.
+    Queue-aware passive matcher.
 
-    Phase 2 scope:
-    - use trade flow at later timestamps to fill resting GFD orders
-    - support queue_model='none' or 'simple'
-    - fill passive orders at the resting order price
+    Phase 3 scope:
+    - trade flow is consumed globally across multiple resting orders
+    - better prices receive priority before worse prices
+    - FIFO is respected within the same price level
+    - queue_model='simple' consumes queue_ahead_qty before our order can fill
     """
 
-    def __init__(self, order_manager: OrderManager) -> None:
+    def __init__(self, order_manager: OrderManager, queue_tracker: QueueTracker | None = None) -> None:
         self.order_manager = order_manager
+        self.queue_tracker = queue_tracker or QueueTracker()
+
+    def match_resting_orders(
+        self,
+        orders: Sequence[ManagedOrder],
+        trade_flow: Iterable[Trade],
+        ts: int,
+        queue_model: str = "simple",
+    ) -> List[Fill]:
+        if not orders:
+            return []
+
+        trades = list(trade_flow)
+        remaining_by_trade = [int(trade.quantity) for trade in trades]
+        fills: List[Fill] = []
+
+        for order in orders:
+            if order.remaining_qty <= 0:
+                continue
+            for idx, trade in enumerate(trades):
+                if order.remaining_qty <= 0:
+                    break
+                if trade.symbol != order.symbol:
+                    continue
+                if remaining_by_trade[idx] <= 0:
+                    continue
+                if not self._trade_is_marketable_for_order(order, trade):
+                    continue
+
+                remaining_after_queue = self.queue_tracker.apply_queue_ahead(
+                    order=order,
+                    marketable_volume=remaining_by_trade[idx],
+                    queue_model=queue_model,
+                )
+                remaining_by_trade[idx] = remaining_after_queue
+                if remaining_after_queue <= 0:
+                    continue
+
+                fill_qty = min(remaining_after_queue, order.remaining_qty)
+                self.order_manager.fill(order.order_id, fill_qty, order.price, ts)
+                remaining_by_trade[idx] -= fill_qty
+                fills.append(Fill(order.order_id, order.symbol, order.price, fill_qty, "maker", ts))
+
+        return fills
 
     def match_resting_order(
         self,
         order: ManagedOrder,
         trade_flow: Iterable[Trade],
         ts: int,
-        queue_model: str = "none",
+        queue_model: str = "simple",
     ) -> List[Fill]:
-        fills: List[Fill] = []
-        if order.remaining_qty <= 0:
-            return fills
+        return self.match_resting_orders([order], trade_flow, ts, queue_model=queue_model)
 
-        for trade in trade_flow:
-            if trade.symbol != order.symbol or order.remaining_qty <= 0:
-                continue
-            marketable_volume = self._marketable_volume(order, trade)
-            if marketable_volume <= 0:
-                continue
-
-            if queue_model == "simple" and order.queue_ahead_qty > 0:
-                absorbed = min(marketable_volume, order.queue_ahead_qty)
-                order.queue_ahead_qty -= absorbed
-                marketable_volume -= absorbed
-
-            if marketable_volume <= 0:
-                continue
-
-            fill_qty = min(marketable_volume, order.remaining_qty)
-            self.order_manager.fill(order.order_id, fill_qty, order.price, ts)
-            fills.append(Fill(order.order_id, order.symbol, order.price, fill_qty, "maker", ts))
-
-        return fills
-
-    def _marketable_volume(self, order: ManagedOrder, trade: Trade) -> int:
-        if order.side == Side.BUY and trade.price <= order.price:
-            return int(trade.quantity)
-        if order.side == Side.SELL and trade.price >= order.price:
-            return int(trade.quantity)
-        return 0
+    def _trade_is_marketable_for_order(self, order: ManagedOrder, trade: Trade) -> bool:
+        if order.side == Side.BUY:
+            return trade.price <= order.price
+        return trade.price >= order.price

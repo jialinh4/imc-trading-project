@@ -51,7 +51,7 @@ def _market_data() -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def test_exchange_backtester_executes_aggressive_order(tmp_path) -> None:
+def test_exchange_backtester_executes_aggressive_order() -> None:
     trader = StaticTrader({0: {Product.AMETHYSTS: [Order(Product.AMETHYSTS, 10002, 2)]}, 100: {}})
     backtester = ExchangeBacktester(
         trader=trader,
@@ -60,7 +60,6 @@ def test_exchange_backtester_executes_aggressive_order(tmp_path) -> None:
         fair_marks={Product.AMETHYSTS: lambda *_args, **_kwargs: 10000},
         market_data=_market_data(),
         trade_history=pd.DataFrame(columns=["timestamp", "symbol", "price", "quantity", "buyer", "seller"]),
-        file_name=str(tmp_path / "exchange.log"),
     )
 
     backtester.run()
@@ -166,3 +165,80 @@ def test_exchange_backtester_passes_incremental_own_trades_to_next_callback() ->
     assert own_trade.price == 10000
     assert own_trade.quantity == 2
     assert second_state.position[Product.AMETHYSTS] == 2
+
+
+def test_exchange_backtester_simple_queue_delays_passive_fill() -> None:
+    class QueueAwareTrader:
+        def run(self, state):
+            if state.timestamp == 0:
+                return {Product.AMETHYSTS: [Order(Product.AMETHYSTS, 9998, 3)]}, 1, ""
+            return {}, 1, ""
+
+    trade_history = pd.DataFrame(
+        [
+            {
+                "timestamp": 100,
+                "symbol": Product.AMETHYSTS,
+                "price": 9998,
+                "quantity": 4,
+                "buyer": "A",
+                "seller": "B",
+            }
+        ]
+    )
+
+    backtester = ExchangeBacktester(
+        trader=QueueAwareTrader(),
+        listings={Product.AMETHYSTS: LISTINGS[Product.AMETHYSTS]},
+        position_limit={Product.AMETHYSTS: POSITION_LIMITS[Product.AMETHYSTS]},
+        fair_marks={Product.AMETHYSTS: lambda *_args, **_kwargs: 10000},
+        market_data=_market_data(),
+        trade_history=trade_history,
+        resting_mode="persistent",
+        queue_model="simple",
+    )
+
+    backtester.run()
+
+    only_order = next(iter(backtester.order_manager.orders.values()))
+    assert only_order.remaining_qty == 3
+    assert only_order.queue_ahead_qty == 6
+    assert backtester.current_position[Product.AMETHYSTS] == 0
+
+
+def test_exchange_backtester_none_queue_fills_same_trade_flow_immediately() -> None:
+    class QueueAwareTrader:
+        def run(self, state):
+            if state.timestamp == 0:
+                return {Product.AMETHYSTS: [Order(Product.AMETHYSTS, 9998, 3)]}, 1, ""
+            return {}, 1, ""
+
+    trade_history = pd.DataFrame(
+        [
+            {
+                "timestamp": 100,
+                "symbol": Product.AMETHYSTS,
+                "price": 9998,
+                "quantity": 4,
+                "buyer": "A",
+                "seller": "B",
+            }
+        ]
+    )
+
+    backtester = ExchangeBacktester(
+        trader=QueueAwareTrader(),
+        listings={Product.AMETHYSTS: LISTINGS[Product.AMETHYSTS]},
+        position_limit={Product.AMETHYSTS: POSITION_LIMITS[Product.AMETHYSTS]},
+        fair_marks={Product.AMETHYSTS: lambda *_args, **_kwargs: 10000},
+        market_data=_market_data(),
+        trade_history=trade_history,
+        resting_mode="persistent",
+        queue_model="none",
+    )
+
+    backtester.run()
+
+    only_order = next(iter(backtester.order_manager.orders.values()))
+    assert only_order.status == OrderStatus.FILLED
+    assert backtester.current_position[Product.AMETHYSTS] == 3
