@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import io
+from pathlib import Path
+
 import pandas as pd
 
 from datamodel import Order
@@ -242,3 +245,57 @@ def test_exchange_backtester_none_queue_fills_same_trade_flow_immediately() -> N
     only_order = next(iter(backtester.order_manager.orders.values()))
     assert only_order.status == OrderStatus.FILLED
     assert backtester.current_position[Product.AMETHYSTS] == 3
+
+
+def test_exchange_backtester_records_portfolio_snapshot_per_timestamp() -> None:
+    trader = StaticTrader({0: {Product.AMETHYSTS: [Order(Product.AMETHYSTS, 10002, 1)]}, 100: {}})
+    backtester = ExchangeBacktester(
+        trader=trader,
+        listings={Product.AMETHYSTS: LISTINGS[Product.AMETHYSTS]},
+        position_limit={Product.AMETHYSTS: POSITION_LIMITS[Product.AMETHYSTS]},
+        fair_marks={Product.AMETHYSTS: lambda *_args, **_kwargs: 10000},
+        market_data=_market_data(),
+        trade_history=pd.DataFrame(columns=["timestamp", "symbol", "price", "quantity", "buyer", "seller"]),
+    )
+
+    backtester.run()
+
+    portfolio_history = backtester.accounting.get_portfolio_history()
+    assert len(portfolio_history) == 2
+    assert portfolio_history[-1].symbol == "PORTFOLIO"
+    assert portfolio_history[-1].total_pnl_fair == backtester.portfolio_pnl_history[-1]
+
+
+def test_exchange_backtester_writes_enhanced_pnl_columns_to_log(tmp_path: Path) -> None:
+    log_path = tmp_path / "exchange_phase4.log"
+    trader = StaticTrader({0: {Product.AMETHYSTS: [Order(Product.AMETHYSTS, 10002, 1)]}, 100: {}})
+    backtester = ExchangeBacktester(
+        trader=trader,
+        listings={Product.AMETHYSTS: LISTINGS[Product.AMETHYSTS]},
+        position_limit={Product.AMETHYSTS: POSITION_LIMITS[Product.AMETHYSTS]},
+        fair_marks={Product.AMETHYSTS: lambda *_args, **_kwargs: 10000},
+        market_data=_market_data(),
+        trade_history=pd.DataFrame(columns=["timestamp", "symbol", "price", "quantity", "buyer", "seller"]),
+        file_name=str(log_path),
+    )
+
+    backtester.run()
+
+    content = log_path.read_text()
+    activities = content.split("Activities log:\n", 1)[1].split("\n\n\n\nTrade History:\n", 1)[0]
+    activities_df = pd.read_csv(io.StringIO(activities), sep=";")
+
+    expected_columns = {
+        "realized_pnl",
+        "unrealized_pnl_mid",
+        "unrealized_pnl_fair",
+        "total_pnl_mid",
+        "total_pnl_fair",
+        "total_pnl_liquidation",
+        "profit_and_loss",
+        "net_position",
+        "cash_balance",
+        "portfolio_total_pnl_fair",
+    }
+    assert expected_columns.issubset(set(activities_df.columns))
+    assert activities_df["profit_and_loss"].notna().all()

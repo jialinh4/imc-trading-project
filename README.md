@@ -163,3 +163,11 @@ This keeps the main strategy code separate from the exact file sent to the compe
 4. Preserve resting orders across timestamps
 5. Replace legacy PnL marking with `AccountingEngine`
 6. Expand tests beyond layout validation
+
+
+## Phase 4 status
+
+- AccountingEngine now drives per-symbol and portfolio PnL snapshots.
+- ExchangeBacktester activities log now includes realized / unrealized / total PnL columns.
+- Queue-aware maker matching remains enabled from Phase 3.
+- Next major step: adapt analysis scripts and submission workflow around the richer logs.

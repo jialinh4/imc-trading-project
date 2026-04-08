@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import Dict, List
 
 from datamodel import OrderDepth
@@ -22,14 +22,18 @@ class PnLSnapshot:
     cash: float
     num_fills: int
 
+    def to_dict(self) -> Dict[str, float | int | str]:
+        return asdict(self)
+
 
 class AccountingEngine:
     """
     Per-symbol accounting with realized/unrealized split.
 
-    Phase 1 scope:
-    - replaces legacy cash / pnl dicts inside the new exchange backtester
-    - keeps a clean mark interface for later portfolio-level aggregation
+    Phase 4 scope:
+    - maintain per-symbol mark history
+    - expose portfolio-level snapshots per timestamp
+    - provide structured history for enhanced backtester logging
     """
 
     def __init__(self) -> None:
@@ -38,6 +42,7 @@ class AccountingEngine:
         self.avg_entry_price: Dict[str, float] = {}
         self.cash: Dict[str, float] = {}
         self.history: List[PnLSnapshot] = []
+        self.portfolio_history: List[PnLSnapshot] = []
 
     def _ensure_symbol(self, symbol: str) -> None:
         self.realized_pnl.setdefault(symbol, 0.0)
@@ -126,9 +131,9 @@ class AccountingEngine:
         self.history.append(snapshot)
         return snapshot
 
-    def portfolio_pnl(self, timestamp: int) -> PnLSnapshot:
+    def mark_portfolio(self, timestamp: int) -> PnLSnapshot:
         snapshots = [snap for snap in self.history if snap.timestamp == timestamp]
-        return PnLSnapshot(
+        portfolio_snapshot = PnLSnapshot(
             timestamp=timestamp,
             symbol="PORTFOLIO",
             realized_pnl=sum(s.realized_pnl for s in snapshots),
@@ -141,6 +146,24 @@ class AccountingEngine:
             cash=sum(s.cash for s in snapshots),
             num_fills=sum(s.num_fills for s in snapshots),
         )
+        self.portfolio_history.append(portfolio_snapshot)
+        return portfolio_snapshot
 
-    def get_history(self) -> List[PnLSnapshot]:
-        return list(self.history)
+    def portfolio_pnl(self, timestamp: int) -> PnLSnapshot:
+        existing = [snap for snap in self.portfolio_history if snap.timestamp == timestamp]
+        if existing:
+            return existing[-1]
+        return self.mark_portfolio(timestamp)
+
+    def get_history(self, symbol: str | None = None) -> List[PnLSnapshot]:
+        history = list(self.history)
+        if symbol is None:
+            return history
+        return [snapshot for snapshot in history if snapshot.symbol == symbol]
+
+    def get_portfolio_history(self) -> List[PnLSnapshot]:
+        return list(self.portfolio_history)
+
+    def get_latest_symbol_snapshot(self, symbol: str) -> PnLSnapshot | None:
+        history = self.get_history(symbol=symbol)
+        return history[-1] if history else None

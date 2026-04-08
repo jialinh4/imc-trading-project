@@ -15,17 +15,16 @@ from .queue_tracker import QueueModel, QueueTracker
 
 class ExchangeBacktester:
     """
-    Phase 3 exchange-style backtester.
+    Phase 4 exchange-style backtester.
 
     Included in this phase:
-    - queue-aware maker matching for resting passive orders
-    - price-priority then FIFO matching across multiple resting orders
-    - queue_model='simple' as the default passive fill model
-    - 'none' compatibility mode remains available for comparison
+    - AccountingEngine becomes the source of truth for per-symbol and portfolio pnl
+    - activities log includes realized / unrealized / total pnl columns
+    - portfolio-level marks are captured per timestamp for later analysis
 
-    Deferred to later phases:
+    Still deferred:
     - pro-rata queue model
-    - full accounting/log output migration
+    - broader analysis-script refactors beyond backward-compatible log fields
     """
 
     def __init__(
@@ -40,6 +39,7 @@ class ExchangeBacktester:
         resting_mode: str = "cancel_replace",
         default_tif: TimeInForce = TimeInForce.GFD,
         queue_model: str = "simple",
+        liquidation_slippage: float = 0.0,
     ):
         self.trader = trader
         self.listings = listings
@@ -51,6 +51,7 @@ class ExchangeBacktester:
         self.resting_mode = resting_mode
         self.default_tif = default_tif
         self.queue_model = QueueModel(queue_model).value
+        self.liquidation_slippage = float(liquidation_slippage)
 
         self.observations = [Observation({}, {}) for _ in range(len(market_data))]
         self.queue_tracker = QueueTracker()
@@ -61,6 +62,7 @@ class ExchangeBacktester:
 
         self.current_position = {product: 0 for product in self.listings.keys()}
         self.pnl_history: List[float] = []
+        self.portfolio_pnl_history: List[float] = []
         self.pnl = {product: 0.0 for product in self.listings.keys()}
         self.cash = {product: 0.0 for product in self.listings.keys()}
         self.trades: List[Dict[str, Any]] = []
@@ -143,13 +145,15 @@ class ExchangeBacktester:
             )
 
             current_order_depths = self._construct_order_depths(group)
-            for product in group["product"].tolist():
+            group_products = group["product"].tolist()
+            for product in group_products:
                 fair_value = self._compute_fair_value(product, timestamp, group)
                 snapshot = self.accounting.mark(
                     timestamp=timestamp,
                     symbol=product,
                     order_depth=current_order_depths[product],
                     fair_value=fair_value,
+                    slippage=self.liquidation_slippage,
                     num_fills=len(fills_at_timestamp.get(product, [])),
                 )
                 self.current_position[product] = self.accounting.position.get(product, 0)
@@ -157,6 +161,8 @@ class ExchangeBacktester:
                 self.pnl[product] = snapshot.total_pnl_fair
                 self.pnl_history.append(snapshot.total_pnl_fair)
 
+            portfolio_snapshot = self.accounting.mark_portfolio(timestamp)
+            self.portfolio_pnl_history.append(portfolio_snapshot.total_pnl_fair)
             self.sandbox_logs.append({"sandboxLog": sandbox_log, "lambdaLog": "", "timestamp": timestamp})
 
         if len(self.market_data) > 0:
@@ -259,12 +265,83 @@ class ExchangeBacktester:
             depth = self._construct_order_depths(group)[product]
             return (max(depth.buy_orders.keys()) + min(depth.sell_orders.keys())) / 2
 
+    def _snapshot_frame(self) -> pd.DataFrame:
+        if not self.accounting.get_history():
+            return pd.DataFrame(
+                columns=[
+                    "timestamp",
+                    "product",
+                    "realized_pnl",
+                    "unrealized_pnl_mid",
+                    "unrealized_pnl_fair",
+                    "total_pnl_mid",
+                    "total_pnl_fair",
+                    "total_pnl_liquidation",
+                    "position",
+                    "cash",
+                    "num_fills",
+                ]
+            )
+        rows = []
+        for snapshot in self.accounting.get_history():
+            row = snapshot.to_dict()
+            row["product"] = row.pop("symbol")
+            row["profit_and_loss"] = row["total_pnl_fair"]
+            row["net_position"] = row.pop("position")
+            row["cash_balance"] = row.pop("cash")
+            rows.append(row)
+        return pd.DataFrame(rows)
+
+    def _portfolio_snapshot_frame(self) -> pd.DataFrame:
+        if not self.accounting.get_portfolio_history():
+            return pd.DataFrame(
+                columns=[
+                    "timestamp",
+                    "portfolio_realized_pnl",
+                    "portfolio_unrealized_pnl_mid",
+                    "portfolio_unrealized_pnl_fair",
+                    "portfolio_total_pnl_mid",
+                    "portfolio_total_pnl_fair",
+                    "portfolio_total_pnl_liquidation",
+                    "portfolio_position",
+                    "portfolio_cash",
+                    "portfolio_num_fills",
+                ]
+            )
+        rows = []
+        for snapshot in self.accounting.get_portfolio_history():
+            rows.append(
+                {
+                    "timestamp": snapshot.timestamp,
+                    "portfolio_realized_pnl": snapshot.realized_pnl,
+                    "portfolio_unrealized_pnl_mid": snapshot.unrealized_pnl_mid,
+                    "portfolio_unrealized_pnl_fair": snapshot.unrealized_pnl_fair,
+                    "portfolio_total_pnl_mid": snapshot.total_pnl_mid,
+                    "portfolio_total_pnl_fair": snapshot.total_pnl_fair,
+                    "portfolio_total_pnl_liquidation": snapshot.total_pnl_liquidation,
+                    "portfolio_position": snapshot.position,
+                    "portfolio_cash": snapshot.cash,
+                    "portfolio_num_fills": snapshot.num_fills,
+                }
+            )
+        return pd.DataFrame(rows)
+
+    def _activities_log_frame(self) -> pd.DataFrame:
+        market_data = self.market_data.copy()
+        market_data["product"] = market_data["product"].astype(str)
+        snapshot_df = self._snapshot_frame()
+        portfolio_df = self._portfolio_snapshot_frame()
+        if not snapshot_df.empty:
+            market_data = market_data.merge(snapshot_df, on=["timestamp", "product"], how="left")
+        else:
+            market_data["profit_and_loss"] = 0.0
+        if not portfolio_df.empty:
+            market_data = market_data.merge(portfolio_df, on=["timestamp"], how="left")
+        return market_data
+
     def _log_trades(self, filename: str | None = None):
         if filename is None:
             return None
-
-        self.market_data = self.market_data.copy()
-        self.market_data["profit_and_loss"] = self.pnl_history
 
         output = ""
         output += "Sandbox logs:\n"
@@ -272,9 +349,10 @@ class ExchangeBacktester:
             output += json.dumps(item, indent=2) + "\n"
 
         output += "\n\n\n\nActivities log:\n"
-        market_data_csv = self.market_data.to_csv(index=False, sep=";")
-        market_data_csv = market_data_csv.replace("\r\n", "\n")
-        output += market_data_csv
+        activities_df = self._activities_log_frame()
+        activities_csv = activities_df.to_csv(index=False, sep=";")
+        activities_csv = activities_csv.replace("\r\n", "\n")
+        output += activities_csv
 
         output += "\n\n\n\nTrade History:\n"
         output += json.dumps(self.trades, indent=2)
