@@ -3,10 +3,22 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "imc-trading-project"
+name = "imc-local-lab"
 version = "0.1.0"
-description = "Scaffold migrated from backtester-refined.ipynb"
+description = "Local IMC Prosperity trading lab for trader validation, day backtests, and submission log replay"
+readme = "README.md"
 requires-python = ">=3.10"
+dependencies = [
+  "jsonpickle>=3.0.4",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.2.0",
+]
+
+[project.scripts]
+imc-local = "imc_local_lab.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

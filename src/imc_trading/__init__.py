@@ -1,1 +1,0 @@
-"""IMC trading project package."""

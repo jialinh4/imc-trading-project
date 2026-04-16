@@ -1,5 +1,6 @@
 # Python
 __pycache__/
+**/__pycache__/
 *.py[cod]
 *$py.class
 *.so
@@ -25,23 +26,18 @@ htmlcov/
 # Jupyter
 .ipynb_checkpoints/
 
-# Local data and experiment outputs
-logs/*.log
-logs/*.csv
-logs/*.json
-logs/*.parquet
-outputs/**
-!outputs/.gitkeep
-data/**/*.csv
-data/**/*.parquet
-data/**/*.feather
-data/**/*.pickle
-data/**/*.pkl
-data/**/*.json
-!data/raw/.gitkeep
-!data/processed/.gitkeep
+# Local datasets (keep folder structure only)
+data/day_csv/*
+!data/day_csv/.gitkeep
 
-# IMC local files
+data/submissions/*
+!data/submissions/.gitkeep
+
+# Generated run artifacts
+runs/*
+!runs/.gitkeep
+
+# Local IMC / user files
 /datamodel.py
 /trader_data/
 
