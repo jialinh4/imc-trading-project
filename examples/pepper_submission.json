@@ -1,0 +1,57 @@
+{
+  "submissionId": "pepper-example",
+  "activitiesLog": "day;timestamp;product;bid_price_1;bid_volume_1;bid_price_2;bid_volume_2;bid_price_3;bid_volume_3;ask_price_1;ask_volume_1;ask_price_2;ask_volume_2;ask_price_3;ask_volume_3;mid_price;profit_and_loss\n-1;0;INTARIAN_PEPPER_ROOT;99;10;98;8;;;101;10;102;8;;;100.0;0.0\n-1;100;INTARIAN_PEPPER_ROOT;100;10;99;8;;;102;10;103;8;;;101.0;0.0\n-1;200;INTARIAN_PEPPER_ROOT;102;10;101;8;;;104;10;105;8;;;103.0;0.0\n-1;300;INTARIAN_PEPPER_ROOT;101;10;100;8;;;103;10;104;8;;;102.0;0.0\n-1;400;INTARIAN_PEPPER_ROOT;103;10;102;8;;;105;10;106;8;;;104.0;0.0",
+  "logs": [],
+  "tradeHistory": [
+    {
+      "day": -1,
+      "timestamp": 0,
+      "buyer": "A",
+      "seller": "B",
+      "symbol": "INTARIAN_PEPPER_ROOT",
+      "currency": "SEASHELLS",
+      "price": 99,
+      "quantity": 6
+    },
+    {
+      "day": -1,
+      "timestamp": 100,
+      "buyer": "A",
+      "seller": "B",
+      "symbol": "INTARIAN_PEPPER_ROOT",
+      "currency": "SEASHELLS",
+      "price": 102,
+      "quantity": 6
+    },
+    {
+      "day": -1,
+      "timestamp": 200,
+      "buyer": "A",
+      "seller": "B",
+      "symbol": "INTARIAN_PEPPER_ROOT",
+      "currency": "SEASHELLS",
+      "price": 102,
+      "quantity": 6
+    },
+    {
+      "day": -1,
+      "timestamp": 300,
+      "buyer": "A",
+      "seller": "B",
+      "symbol": "INTARIAN_PEPPER_ROOT",
+      "currency": "SEASHELLS",
+      "price": 103,
+      "quantity": 6
+    },
+    {
+      "day": -1,
+      "timestamp": 400,
+      "buyer": "A",
+      "seller": "B",
+      "symbol": "INTARIAN_PEPPER_ROOT",
+      "currency": "SEASHELLS",
+      "price": 103,
+      "quantity": 6
+    }
+  ]
+}
