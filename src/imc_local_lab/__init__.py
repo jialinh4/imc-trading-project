@@ -1,5 +1,3 @@
-"""IMC local lab package."""
+"""IMC Prosperity local backtesting package."""
 
-__all__ = [
-    "datamodel",
-]
+__all__ = ["datamodel"]

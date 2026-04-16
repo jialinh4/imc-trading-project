@@ -3,9 +3,9 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "imc-local-lab"
-version = "0.1.0"
-description = "Local IMC Prosperity trading lab for trader validation, day backtests, and submission log replay"
+name = "imc-prosperity-merged"
+version = "0.2.0"
+description = "Merged local IMC Prosperity backtester with round/day CLI, submission replay, and Pepper experiments"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
@@ -18,7 +18,9 @@ dev = [
 ]
 
 [project.scripts]
+imc-prosperity = "imc_local_lab.cli:main"
 imc-local = "imc_local_lab.cli:main"
+prosperity4btest-local = "imc_local_lab.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
